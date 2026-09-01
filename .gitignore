@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Environments
+.env
+.venv/
+env/
+venv/
+ENV/
+Pipfile.lock
+poetry.lock
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# LLM/ML Data
+*.ckpt
+*.pt
+*.pth
+*.h5
+*.npz
+datasets/
+checkpoints/
+runs/
+output/
+*.onnx
+*.mlmodel
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Mac
+.DS_Store
+
+# Pyright/Pylance
+.pyright/
+
+# Other
+.cache/
+.idea/
+.mypy_cache/
+pytest_cache/
+coverage.*
+htmlcov/
+.tox/
+# End of Selection
+```
