@@ -54,3 +54,5 @@ htmlcov/
 .tox/
 # End of Selection
 ```
+# OpenCode runtime
+.omo/
