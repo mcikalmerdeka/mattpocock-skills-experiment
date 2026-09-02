@@ -53,6 +53,12 @@ coverage.*
 htmlcov/
 .tox/
 # End of Selection
+
+# Doc QA runtime data (Conversations, Vector Store)
+data/
 ```
 # OpenCode runtime
 .omo/
+
+# Playwright MCP artifacts
+.playwright-mcp/
