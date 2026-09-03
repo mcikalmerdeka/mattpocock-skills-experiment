@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from doc_qa.config import ConfigError, load_settings
+from src.config import ConfigError, load_settings
 
 _CONFIG_ENV_VARS = (
     "OPENAI_API_KEY",

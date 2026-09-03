@@ -56,7 +56,7 @@ htmlcov/
 
 # Doc QA runtime data (Conversations, Vector Store)
 data/
-```
+
 # OpenCode runtime
 .omo/
 

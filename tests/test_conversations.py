@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from doc_qa.conversations import (
+from src.conversations import (
     Conversation,
     ConversationNotFoundError,
     ConversationStore,
