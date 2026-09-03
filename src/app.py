@@ -9,6 +9,7 @@ configuration.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import streamlit as st
@@ -30,9 +31,24 @@ except ConfigError as error:
     st.error(f"**Doc QA can't start: configuration problem**\n\n{error}")
     st.stop()
 
+
+@st.cache_resource
+def _build_vector_store(path: str) -> VectorStore:
+    """Build the Vector Store once per process, at an absolute path.
+
+    Chroma keys its shared System cache by the raw path string
+    (trychroma/chroma#7253, fix unreleased in 1.5.9), and a failing client
+    init can evict the entry out from under a concurrent constructor — which
+    surfaces as KeyError on the path. Constructing once per process with a
+    resolved absolute path keeps the identifier stable and keeps reruns from
+    ever racing a construction.
+    """
+    return VectorStore(Path(path))
+
+
 store = ConversationStore(settings.data_dir / "conversations")
 ingestion = Ingestion(
-    store=VectorStore(settings.data_dir / "vector_store"),
+    store=_build_vector_store(str((settings.data_dir / "vector_store").resolve())),
     embedder=OpenAIEmbedder(api_key=settings.openai_api_key, model=settings.embedding_model),
 )
 
