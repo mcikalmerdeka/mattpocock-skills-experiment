@@ -2,8 +2,10 @@
 
 Each Conversation persists as its own JSON file — ``{id}.json`` inside the
 store's root directory — holding the conversation's id, name, created/updated
-timestamps, and ordered messages. A new Conversation is named from its first
-message; until then it carries a placeholder name.
+timestamps, and ordered messages. An assistant Message may carry ``sources``:
+the Retrieved Chunks that backed its Answer, persisted alongside the message.
+A new Conversation is named from its first message; until then it carries a
+placeholder name.
 """
 
 from __future__ import annotations
@@ -13,6 +15,11 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+from src.logging_setup import get_logger
+
+logger = get_logger("conversations")
 
 _PLACEHOLDER_NAME = "New Conversation"
 _MAX_NAME_LENGTH = 60
@@ -24,11 +31,25 @@ class ConversationNotFoundError(Exception):
 
 
 @dataclass(frozen=True)
+class MessageSource:
+    """One Retrieved Chunk that backed an assistant Message's Answer."""
+
+    source: str
+    chunk_index: int
+    text: str
+
+
+@dataclass(frozen=True)
 class Message:
-    """One message in a Conversation."""
+    """One message in a Conversation.
+
+    An assistant Message may carry ``sources`` — the Retrieved Chunks that
+    grounded its Answer — so citations persist with the Conversation.
+    """
 
     role: str
     content: str
+    sources: tuple[MessageSource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,14 +73,37 @@ def _derive_name(content: str) -> str:
     return collapsed[:_MAX_NAME_LENGTH].rstrip() + _ELLIPSIS
 
 
-def _message_payload(message: Message) -> dict[str, str]:
+def _source_payload(source: MessageSource) -> dict[str, Any]:
+    """Serialize a MessageSource to its JSON payload shape."""
+    return {"source": source.source, "chunk_index": source.chunk_index, "text": source.text}
+
+
+def _source_from_payload(payload: dict[str, Any]) -> MessageSource:
+    """Deserialize a MessageSource from its JSON payload shape."""
+    return MessageSource(
+        source=payload["source"],
+        chunk_index=int(payload["chunk_index"]),
+        text=payload["text"],
+    )
+
+
+def _message_payload(message: Message) -> dict[str, Any]:
     """Serialize a Message to its JSON payload shape."""
-    return {"role": message.role, "content": message.content}
+    payload: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.sources:
+        payload["sources"] = [_source_payload(source) for source in message.sources]
+    return payload
 
 
-def _message_from_payload(payload: dict[str, str]) -> Message:
+def _message_from_payload(payload: dict[str, Any]) -> Message:
     """Deserialize a Message from its JSON payload shape."""
-    return Message(role=payload["role"], content=payload["content"])
+    return Message(
+        role=payload["role"],
+        content=payload["content"],
+        sources=tuple(
+            _source_from_payload(source) for source in payload.get("sources", [])
+        ),
+    )
 
 
 class ConversationStore:
@@ -80,6 +124,7 @@ class ConversationStore:
             messages=(),
         )
         self._write(conversation)
+        logger.debug("Created Conversation %s", conversation.id)
         return conversation
 
     def load(self, conversation_id: str) -> Conversation:
@@ -109,6 +154,20 @@ class ConversationStore:
         conversations = [self.load(path.stem) for path in self._root.glob("*.json")]
         return sorted(conversations, key=lambda conversation: conversation.updated_at, reverse=True)
 
+    def delete(self, conversation_id: str) -> None:
+        """Delete the Conversation with ``conversation_id``.
+
+        Raises:
+            ConversationNotFoundError: If no Conversation with that id exists.
+        """
+        path = self._conversation_path(conversation_id)
+        if not path.is_file():
+            raise ConversationNotFoundError(
+                f"No Conversation with id {conversation_id!r} in {self._root}"
+            )
+        path.unlink()
+        logger.debug("Deleted Conversation %s", conversation_id)
+
     def append(self, conversation_id: str, message: Message) -> Conversation:
         """Append ``message`` to the Conversation and return the updated Conversation.
 
@@ -127,6 +186,9 @@ class ConversationStore:
             messages=(*conversation.messages, message),
         )
         self._write(updated)
+        logger.debug(
+            "Appended %s message to Conversation %s", message.role, conversation_id
+        )
         return updated
 
     def _write(self, conversation: Conversation) -> None:

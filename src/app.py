@@ -10,6 +10,7 @@ chat) are constructed here, from configuration.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,9 +18,15 @@ import streamlit as st
 
 from src.answering import Answering, OpenAIChatModel
 from src.config import ConfigError, load_settings
-from src.conversations import ConversationNotFoundError, ConversationStore, Message
+from src.conversations import (
+    ConversationNotFoundError,
+    ConversationStore,
+    Message,
+    MessageSource,
+)
 from src.embedders import OpenAIEmbedder
 from src.ingestion import Document, Ingestion
+from src.logging_setup import configure_logging, get_logger
 from src.vector_store import VectorStore
 
 if TYPE_CHECKING:
@@ -32,6 +39,15 @@ try:
 except ConfigError as error:
     st.error(f"**Doc QA can't start: configuration problem**\n\n{error}")
     st.stop()
+
+configure_logging(settings.data_dir / "logs")
+logger = get_logger("app")
+logger.info(
+    "Doc QA starting — chat_model=%s, reasoning_effort=%s, embedding_model=%s",
+    settings.chat_model,
+    settings.reasoning_effort,
+    settings.embedding_model,
+)
 
 
 @st.cache_resource
@@ -78,13 +94,24 @@ def _select(conversation_id: str) -> None:
     st.session_state.selected_conversation_id = conversation_id
 
 
+def _grouped_sources(
+    sources: Sequence[MessageSource],
+) -> list[tuple[str, list[MessageSource]]]:
+    """Group a Message's sources by their source Document, preserving order."""
+    grouped: dict[str, list[MessageSource]] = {}
+    for source in sources:
+        grouped.setdefault(source.source, []).append(source)
+    return list(grouped.items())
+
+
 def _ingest_upload(ingestion: Ingestion, upload: UploadedFile) -> None:
     """Ingest one uploaded Document and report the outcome, every time.
 
     Streamlit reruns the whole script on every interaction while an upload
     stays selected, but re-ingesting is safe: Ingestion's dedup short-circuits
     identical content (reported as skipped) before any embedding happens, and
-    changed content under a known filename reports as replaced.
+    changed content under a known filename reports as replaced. An embedding
+    failure reports a readable error and leaves the app running.
     """
     try:
         content = upload.getvalue().decode("utf-8")
@@ -99,7 +126,15 @@ def _ingest_upload(ingestion: Ingestion, upload: UploadedFile) -> None:
         st.error(f"**{upload.name}** is empty — there is nothing to ingest.")
         return
 
-    result = ingestion.ingest(Document(filename=upload.name, content=content))
+    try:
+        result = ingestion.ingest(Document(filename=upload.name, content=content))
+    except Exception as error:
+        st.error(
+            f"Ingesting **{upload.name}** failed — the document is not answerable "
+            f"right now. Try uploading it again.\n\n{error}"
+        )
+        return
+
     if result.status == "ingested":
         st.success(f"Ingested **{upload.name}** — {result.chunk_count} Chunks embedded.")
     elif result.status == "skipped":
@@ -119,13 +154,23 @@ with st.sidebar:
 
     for listed in store.list_conversations():
         selected = listed.id == st.session_state.selected_conversation_id
-        if st.button(
+        row = st.columns([0.82, 0.18])
+        if row[0].button(
             listed.name,
             key=f"conversation:{listed.id}",
             use_container_width=True,
             type="primary" if selected else "secondary",
         ):
             _select(listed.id)
+            st.rerun()
+        if row[1].button(
+            "🗑",
+            key=f"delete-conversation:{listed.id}",
+            help=f"Delete “{listed.name}”",
+        ):
+            store.delete(listed.id)
+            if selected:
+                st.session_state.selected_conversation_id = None
             st.rerun()
 
     st.divider()
@@ -136,7 +181,12 @@ with st.sidebar:
 
     ingested = ingestion.ingested_documents()
     if ingested:
-        st.markdown("\n".join(f"- {name}" for name in ingested))
+        for name in ingested:
+            row = st.columns([0.82, 0.18])
+            row[0].markdown(f"- {name}")
+            if row[1].button("🗑", key=f"delete-document:{name}", help=f"Delete “{name}”"):
+                ingestion.delete_document(name)
+                st.rerun()
     else:
         st.caption("No Documents ingested yet.")
 
@@ -165,16 +215,50 @@ except ConversationNotFoundError:
 
 st.subheader(conversation.name)
 
+# A failed model call is reported on the rerun (Streamlit clears inline
+# messages on rerun, so the error travels through session state).
+if "answer_error" in st.session_state:
+    st.error(st.session_state.pop("answer_error"))
+
 if conversation.messages:
     for message in conversation.messages:
         with st.chat_message(message.role):
             st.markdown(message.content)
+            if message.sources:
+                with st.expander("📚 View Sources"):
+                    for source, chunks in _grouped_sources(message.sources):
+                        indices = ", ".join(str(chunk.chunk_index) for chunk in chunks)
+                        st.markdown(f"**{source}** — Chunks {indices}")
+                        for chunk in chunks:
+                            st.markdown(chunk.text)
 else:
     st.info("No messages yet — send the first one below.", icon="💬")
 
 if query := st.chat_input("Type a message…"):
     updated = store.append(conversation.id, Message(role="user", content=query))
-    with st.spinner("Thinking…"):
-        answer = answering.answer(updated)
-    store.append(conversation.id, Message(role="assistant", content=answer))
+    try:
+        with st.spinner("Thinking…"):
+            answer = answering.answer(updated)
+    except Exception as error:
+        # The Query is already persisted, so it stays in the Conversation and
+        # can be retried; no assistant Message is appended, so error text
+        # never enters the history.
+        st.session_state.answer_error = (
+            "The model call failed — your message is saved above, try sending "
+            f"it again.\n\n{error}"
+        )
+        st.rerun()
+    store.append(
+        conversation.id,
+        Message(
+            role="assistant",
+            content=answer.text,
+            sources=tuple(
+                MessageSource(
+                    source=chunk.source, chunk_index=chunk.index, text=chunk.text
+                )
+                for chunk in answer.sources
+            ),
+        ),
+    )
     st.rerun()

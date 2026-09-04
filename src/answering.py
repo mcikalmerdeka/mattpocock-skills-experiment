@@ -1,30 +1,40 @@
 """The Answering module: answers a Conversation's latest Query with an Answer grounded in Retrieved Chunks.
 
 Answering Retrieves the top 4 Chunks most similar to the Query, grounds a
-system prompt with them, and completes the Conversation through the injected
-ChatModel — supplied only the 20 most recent messages as history, however
-long the Conversation grows. The real ChatModel — OpenAI's Responses API
-through LangChain — is constructed at the composition root, from
-configuration.
+system prompt with them — each excerpt labeled with its source Document so the
+model can point at passages — and completes the Conversation through the
+injected ChatModel, supplied only the 20 most recent messages as history,
+however long the Conversation grows. The Answer carries the Retrieved Chunks
+that backed it, so callers can show where every Answer came from. The real
+ChatModel — OpenAI's Responses API through LangChain — is constructed at the
+composition root, from configuration.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.conversations import Conversation, Message
-from src.vector_store import VectorStore
+from src.logging_setup import get_logger
+from src.prompts import grounded_system_prompt
+from src.vector_store import Chunk, VectorStore
+
+logger = get_logger("answering")
 
 _RETRIEVAL_K = 4
 _MAX_HISTORY = 20
 
-_SYSTEM_TEMPLATE = """You are the assistant of a document question-answering app. Answer the user's Query using only the Excerpts below — passages Retrieved from the Documents the user has ingested. If the Excerpts do not contain the Answer, say so plainly; do not invent content. Point at the relevant passage when that helps.
 
-Excerpts:
-{context}"""
+@dataclass(frozen=True)
+class Answer:
+    """The Answer to a Query: the model's reply text and the Retrieved Chunks backing it."""
+
+    text: str
+    sources: tuple[Chunk, ...]
 
 
 class ChatModel(Protocol):
@@ -63,8 +73,10 @@ class Answering:
         self._store = store
         self._chat_model = chat_model
 
-    def answer(self, conversation: Conversation) -> str:
-        """Answer the Conversation's most recent message — its Query — and return the Answer text.
+    def answer(self, conversation: Conversation) -> Answer:
+        """Answer the Conversation's most recent message — its Query — and return the Answer.
+
+        The Answer carries the Retrieved Chunks that grounded it.
 
         Raises:
             ValueError: If the Conversation has no messages to answer.
@@ -76,6 +88,11 @@ class Answering:
         *all_history, query = conversation.messages
         history = all_history[-_MAX_HISTORY:]
         chunks = self._store.query_chunks(query.content, k=_RETRIEVAL_K)
-        context = "\n\n".join(chunk.text for chunk in chunks)
-        system = _SYSTEM_TEMPLATE.format(context=context)
-        return self._chat_model.complete(system, history, query.content)
+        system = grounded_system_prompt(chunks)
+        text = self._chat_model.complete(system, history, query.content)
+        logger.info(
+            "Answered a Query with %d Retrieved Chunks and %d history messages",
+            len(chunks),
+            len(history),
+        )
+        return Answer(text=text, sources=tuple(chunks))

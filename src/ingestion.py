@@ -17,7 +17,10 @@ from typing import Literal
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from src.logging_setup import get_logger
 from src.vector_store import VectorStore
+
+logger = get_logger("ingestion")
 
 Status = Literal["ingested", "skipped", "replaced"]
 
@@ -69,10 +72,14 @@ class Ingestion:
         content_hash = hashlib.sha256(document.content.encode("utf-8")).hexdigest()
         known_hash = self._store.registered_hash(document.filename)
         if known_hash == content_hash:
-            return IngestResult(
+            result = IngestResult(
                 status="skipped",
                 chunk_count=self._store.count_chunks(document.filename),
             )
+            logger.info(
+                "%s: %s (%d Chunks)", document.filename, result.status, result.chunk_count
+            )
+            return result
         texts = _chunk_text(document.content)
         if known_hash is not None:
             # Changed content under a known filename: the old Chunks must go
@@ -80,11 +87,29 @@ class Ingestion:
             self._store.delete_chunks_for_source(document.filename)
         self._store.add_chunks(document.filename, content_hash, texts)
         self._store.register_document(document.filename, content_hash)
-        return IngestResult(
+        result = IngestResult(
             status="replaced" if known_hash is not None else "ingested",
             chunk_count=len(texts),
         )
+        logger.info(
+            "%s: %s (%d Chunks)", document.filename, result.status, result.chunk_count
+        )
+        return result
 
     def ingested_documents(self) -> list[str]:
         """List the source names of every ingested Document."""
         return self._store.document_sources()
+
+    def delete_document(self, source: str) -> bool:
+        """Remove ``source`` and its Chunks from the Vector Store.
+
+        Returns whether the Document was ingested at all — deleting an
+        unknown Document is a no-op.
+        """
+        if self._store.registered_hash(source) is None:
+            return False
+        chunk_count = self._store.count_chunks(source)
+        self._store.delete_chunks_for_source(source)
+        self._store.unregister_document(source)
+        logger.info("%s: deleted (%d Chunks removed)", source, chunk_count)
+        return True

@@ -79,8 +79,39 @@ def test_the_answer_is_the_chat_models_reply(
 
     answer = answering.answer(conversation)
 
-    assert answer == "grounded answer"
+    assert answer.text == "grounded answer"
     assert len(chat_model.prompts) == 1
+
+
+def test_the_answer_carries_the_retrieved_chunks(
+    answering: Answering, chat_model: FakeChatModel, store: VectorStore
+) -> None:
+    Ingestion(store=store).ingest(
+        Document(filename="notes.md", content="alpha is the first letter")
+    )
+    conversation = _conversation(Message(role="user", content="tell me about alpha"))
+
+    answer = answering.answer(conversation)
+
+    assert list(answer.sources) == store.chunks_for_source("notes.md")
+
+
+def test_the_system_prompt_labels_each_retrieved_excerpt_with_its_source(
+    answering: Answering, chat_model: FakeChatModel, store: VectorStore
+) -> None:
+    Ingestion(store=store).ingest(Document(filename="cats.md", content="alpha " * 800))
+    Ingestion(store=store).ingest(Document(filename="dogs.md", content="beta " * 400))
+    conversation = _conversation(Message(role="user", content="alpha"))
+
+    answering.answer(conversation)
+
+    system, _, _ = chat_model.prompts[0]
+    assert "alpha" in system
+    # The excerpt is labeled with its source Document — the only way the
+    # filename can reach the prompt.
+    assert "cats.md" in system
+    # Only Retrieved sources are labeled.
+    assert "dogs.md" not in system
 
 
 def test_the_system_prompt_is_grounded_in_the_retrieved_chunks(
@@ -125,7 +156,8 @@ def test_answering_without_ingested_documents_still_answers(
 
     answer = answering.answer(conversation)
 
-    assert answer == "grounded answer"
+    assert answer.text == "grounded answer"
+    assert answer.sources == ()
     system, _, _ = chat_model.prompts[0]
     # The Retrieved context is empty, and the prompt still says so honestly.
     assert "Excerpts:\n" in system

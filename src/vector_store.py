@@ -18,6 +18,10 @@ from typing import Any
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
+from src.logging_setup import get_logger
+
+logger = get_logger("vector_store")
+
 _CHUNK_COLLECTION = "chunks"
 _DOCUMENT_COLLECTION = "documents"
 
@@ -83,6 +87,11 @@ class VectorStore:
             return None
         return str(documents[0])
 
+    def unregister_document(self, source: str) -> None:
+        """Remove ``source`` from the registry of ingested Documents."""
+        self._documents.delete(ids=[source])
+        logger.debug("Unregistered Document %s", source)
+
     def document_sources(self) -> list[str]:
         """List the source names of every ingested Document."""
         return sorted(self._documents.get(include=[])["ids"])
@@ -99,10 +108,12 @@ class VectorStore:
                 for index in range(len(texts))
             ],
         )
+        logger.debug("Added %d Chunks for %s", len(texts), source)
 
     def delete_chunks_for_source(self, source: str) -> None:
         """Delete every Chunk belonging to ``source``."""
         self._chunks.delete(where={"source": source})
+        logger.debug("Deleted Chunks for %s", source)
 
     def count_chunks(self, source: str | None = None) -> int:
         """Count stored Chunks, optionally only those belonging to ``source``."""
@@ -131,4 +142,6 @@ class VectorStore:
             )
             for document in found
         ]
-        return sorted(chunks, key=lambda chunk: chunk.index)
+        ordered = sorted(chunks, key=lambda chunk: chunk.index)
+        logger.debug("Retrieval returned %d Chunks (k=%d)", len(ordered), k)
+        return ordered

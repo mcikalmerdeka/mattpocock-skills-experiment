@@ -127,5 +127,24 @@ def test_similarity_query_returns_relevant_chunks_for_a_query(
     assert {chunk.source for chunk in results} == {"cats.md"}
 
 
+def test_deleting_a_document_removes_its_chunks_and_registry_entry(
+    ingestion: Ingestion, store: VectorStore
+) -> None:
+    ingestion.ingest(Document(filename="notes.md", content="alpha " * 40))
+
+    deleted = ingestion.delete_document("notes.md")
+
+    assert deleted is True
+    assert store.count_chunks("notes.md") == 0
+    assert store.registered_hash("notes.md") is None
+    assert ingestion.ingested_documents() == []
+
+
+def test_deleting_an_unknown_document_reports_nothing_to_delete(
+    ingestion: Ingestion,
+) -> None:
+    assert ingestion.delete_document("never-ingested.md") is False
+
+
 def test_querying_an_empty_vector_store_returns_no_chunks(store: VectorStore) -> None:
     assert store.query_chunks("alpha", k=5) == []

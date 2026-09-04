@@ -14,6 +14,7 @@ from src.conversations import (
     ConversationNotFoundError,
     ConversationStore,
     Message,
+    MessageSource,
 )
 
 _NEW_CONVERSATION_KEYS = {"id", "name", "created_at", "updated_at", "messages"}
@@ -92,6 +93,65 @@ def test_list_returns_every_persisted_conversation_most_recently_updated_first(
     assert listed[0].id == first.id
     assert {conversation.id for conversation in listed} == {first.id, second.id, third.id}
     assert len(listed) == 3
+
+
+def test_a_message_with_sources_round_trips_losslessly(tmp_path: Path) -> None:
+    store = ConversationStore(tmp_path)
+    created = store.create()
+    message = Message(
+        role="assistant",
+        content="grounded answer",
+        sources=(MessageSource(source="notes.md", chunk_index=2, text="excerpt text"),),
+    )
+
+    updated = store.append(created.id, message)
+    reloaded = ConversationStore(tmp_path).load(created.id)
+
+    assert updated.messages == (message,)
+    assert reloaded == updated
+
+
+def test_messages_saved_before_sources_still_load_with_empty_sources(
+    tmp_path: Path,
+) -> None:
+    # Backward compatibility: Conversations persisted before Answers carried
+    # sources have no "sources" key in their JSON payload.
+    store = ConversationStore(tmp_path)
+    created = store.create()
+    payload = {
+        "id": created.id,
+        "name": "Old Conversation",
+        "created_at": created.created_at.isoformat(),
+        "updated_at": created.updated_at.isoformat(),
+        "messages": [{"role": "user", "content": "an old message"}],
+    }
+    (tmp_path / f"{created.id}.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    reloaded = ConversationStore(tmp_path).load(created.id)
+
+    assert reloaded.messages[0].content == "an old message"
+    assert reloaded.messages[0].sources == ()
+
+
+def test_delete_removes_the_conversation_file(tmp_path: Path) -> None:
+    store = ConversationStore(tmp_path)
+    created = store.create()
+
+    store.delete(created.id)
+
+    assert store.list_conversations() == []
+    assert not (tmp_path / f"{created.id}.json").is_file()
+
+
+def test_deleting_an_unknown_conversation_raises_a_readable_error(
+    tmp_path: Path,
+) -> None:
+    store = ConversationStore(tmp_path)
+
+    with pytest.raises(ConversationNotFoundError, match="no-such-id"):
+        store.delete("no-such-id")
 
 
 def test_loading_an_unknown_conversation_raises_a_readable_error(tmp_path: Path) -> None:
