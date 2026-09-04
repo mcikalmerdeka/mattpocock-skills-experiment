@@ -5,10 +5,18 @@ description = "Doc QA: a local, ChatGPT-style web app that answers Queries from 
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "chromadb>=1.5.9",
-    "openai>=3.7.0",
-    "python-dotenv>=1.2.3",
-    "streamlit>=1.63.0",
+    # The LangChain stack: model calls (ChatOpenAI), embeddings
+    # (OpenAIEmbeddings), and the vector store (Chroma) all go through
+    # LangChain — the raw `openai` client is no longer used directly, and
+    # `chromadb` only remains as an explicit floor: Python 3.14 support
+    # (pydantic v1 compat removal) first shipped in chromadb 1.5.5, while
+    # langchain-chroma's own floor predates it.
+    "langchain-chroma",
+    "langchain-openai",
+    "langchain-text-splitters",
+    "chromadb",
+    "python-dotenv",
+    "streamlit",
 ]
 
 [project.scripts]
@@ -26,5 +34,5 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1",
+    "pytest",
 ]

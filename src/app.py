@@ -2,9 +2,10 @@
 
 This module is the only place that wires real configuration into the app;
 every module behind it stays injectable and testable. The Conversation shell
-talks only to the conversations module, and Ingestion embeds through the
-injected Embedder — the real OpenAI client is constructed here, from
-configuration.
+talks only to the conversations module, Ingestion writes Chunks through the
+Vector Store's injected Embeddings, and Answering completes Conversations
+through the injected ChatModel — the real LangChain clients (embeddings and
+chat) are constructed here, from configuration.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import streamlit as st
 
+from src.answering import Answering, OpenAIChatModel
 from src.config import ConfigError, load_settings
 from src.conversations import ConversationNotFoundError, ConversationStore, Message
 from src.embedders import OpenAIEmbedder
@@ -33,7 +35,7 @@ except ConfigError as error:
 
 
 @st.cache_resource
-def _build_vector_store(path: str) -> VectorStore:
+def _build_vector_store(path: str, api_key: str, embedding_model: str) -> VectorStore:
     """Build the Vector Store once per process, at an absolute path.
 
     Chroma keys its shared System cache by the raw path string
@@ -43,13 +45,29 @@ def _build_vector_store(path: str) -> VectorStore:
     resolved absolute path keeps the identifier stable and keeps reruns from
     ever racing a construction.
     """
-    return VectorStore(Path(path))
+    return VectorStore(Path(path), OpenAIEmbedder(api_key=api_key, model=embedding_model))
 
 
+@st.cache_resource
+def _build_chat_model(api_key: str, chat_model: str, reasoning_effort: str) -> OpenAIChatModel:
+    """Build the Chat Model once per process, from configuration."""
+    return OpenAIChatModel(api_key=api_key, model=chat_model, reasoning_effort=reasoning_effort)
+
+
+vector_store = _build_vector_store(
+    str((settings.data_dir / "vector_store").resolve()),
+    api_key=settings.openai_api_key,
+    embedding_model=settings.embedding_model,
+)
 store = ConversationStore(settings.data_dir / "conversations")
-ingestion = Ingestion(
-    store=_build_vector_store(str((settings.data_dir / "vector_store").resolve())),
-    embedder=OpenAIEmbedder(api_key=settings.openai_api_key, model=settings.embedding_model),
+ingestion = Ingestion(store=vector_store)
+answering = Answering(
+    store=vector_store,
+    chat_model=_build_chat_model(
+        api_key=settings.openai_api_key,
+        chat_model=settings.chat_model,
+        reasoning_effort=settings.reasoning_effort,
+    ),
 )
 
 if "selected_conversation_id" not in st.session_state:
@@ -155,5 +173,8 @@ else:
     st.info("No messages yet — send the first one below.", icon="💬")
 
 if query := st.chat_input("Type a message…"):
-    store.append(conversation.id, Message(role="user", content=query))
+    updated = store.append(conversation.id, Message(role="user", content=query))
+    with st.spinner("Thinking…"):
+        answer = answering.answer(updated)
+    store.append(conversation.id, Message(role="assistant", content=answer))
     st.rerun()

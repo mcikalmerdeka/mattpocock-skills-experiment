@@ -1,36 +1,27 @@
 """Embedder provider seam: how text turns into embeddings.
 
-Ingestion talks only to the :class:`Embedder` protocol; the composition root
-constructs the real OpenAI embeddings client from configuration.
+The Vector Store embeds Chunks and Queries through an injected langchain
+``Embeddings``; the composition root constructs the real OpenAI embeddings
+client — through LangChain — from configuration.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Protocol
+from langchain_core.embeddings import Embeddings
 
 
-class Embedder(Protocol):
-    """Turns texts into embedding vectors, one per input, in input order."""
-
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        """Embed ``texts`` and return one vector per input, in input order."""
-        ...
-
-
-class OpenAIEmbedder:
-    """The real Embedder: OpenAI's embeddings API behind the provider seam."""
+class OpenAIEmbedder(Embeddings):
+    """The real Embedder: OpenAI's embeddings API through LangChain, bound to the configured model."""
 
     def __init__(self, api_key: str, model: str) -> None:
-        from openai import OpenAI
+        from langchain_openai import OpenAIEmbeddings
 
-        self._client = OpenAI(api_key=api_key)
-        self._model = model
+        self._client = OpenAIEmbeddings(api_key=api_key, model=model)
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed ``texts`` with the configured model, preserving input order."""
-        if not texts:
-            return []
-        response = self._client.embeddings.create(model=self._model, input=list(texts))
-        ordered = sorted(response.data, key=lambda item: item.index)
-        return [item.embedding for item in ordered]
+        return self._client.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed ``text`` for Retrieval."""
+        return self._client.embed_query(text)
