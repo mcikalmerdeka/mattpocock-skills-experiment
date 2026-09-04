@@ -1,9 +1,11 @@
 """The Answering module: answers a Conversation's latest Query with an Answer grounded in Retrieved Chunks.
 
-Answering Retrieves the Chunks most similar to the Query, grounds a system
-prompt with them, and completes the Conversation through the injected
-ChatModel. The real ChatModel — OpenAI chat completions through LangChain —
-is constructed at the composition root, from configuration.
+Answering Retrieves the top 4 Chunks most similar to the Query, grounds a
+system prompt with them, and completes the Conversation through the injected
+ChatModel — supplied only the 20 most recent messages as history, however
+long the Conversation grows. The real ChatModel — OpenAI's Responses API
+through LangChain — is constructed at the composition root, from
+configuration.
 """
 
 from __future__ import annotations
@@ -16,7 +18,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.conversations import Conversation, Message
 from src.vector_store import VectorStore
 
-_RETRIEVAL_K = 5
+_RETRIEVAL_K = 4
+_MAX_HISTORY = 20
 
 _SYSTEM_TEMPLATE = """You are the assistant of a document question-answering app. Answer the user's Query using only the Excerpts below — passages Retrieved from the Documents the user has ingested. If the Excerpts do not contain the Answer, say so plainly; do not invent content. Point at the relevant passage when that helps.
 
@@ -33,7 +36,7 @@ class ChatModel(Protocol):
 
 
 class OpenAIChatModel:
-    """The real ChatModel: OpenAI chat completions through LangChain."""
+    """The real ChatModel: OpenAI's Responses API through LangChain."""
 
     def __init__(self, api_key: str, model: str, reasoning_effort: str) -> None:
         from langchain_openai import ChatOpenAI
@@ -70,7 +73,8 @@ class Answering:
             raise ValueError(
                 "Cannot answer a Conversation with no messages: the latest message is the Query."
             )
-        *history, query = conversation.messages
+        *all_history, query = conversation.messages
+        history = all_history[-_MAX_HISTORY:]
         chunks = self._store.query_chunks(query.content, k=_RETRIEVAL_K)
         context = "\n\n".join(chunk.text for chunk in chunks)
         system = _SYSTEM_TEMPLATE.format(context=context)

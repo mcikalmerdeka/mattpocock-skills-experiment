@@ -131,6 +131,48 @@ def test_answering_without_ingested_documents_still_answers(
     assert "Excerpts:\n" in system
 
 
+def test_only_the_twenty_most_recent_messages_are_passed_as_history(
+    answering: Answering, chat_model: FakeChatModel
+) -> None:
+    # 25 messages: the latest (index 24) is the Query, so the history is
+    # indices 0-23 — and the cap keeps only its last 20, indices 4-23.
+    messages = tuple(
+        Message(role="user" if index % 2 == 0 else "assistant", content=f"message {index}")
+        for index in range(25)
+    )
+    conversation = _conversation(*messages)
+
+    answering.answer(conversation)
+
+    _, history, _ = chat_model.prompts[0]
+    assert [message.content for message in history] == [
+        f"message {index}" for index in range(4, 24)
+    ]
+
+
+def test_retrieval_supplies_the_top_four_chunks(
+    answering: Answering, chat_model: FakeChatModel, store: VectorStore
+) -> None:
+    # Six paragraphs, each its own Chunk: paragraph ``index`` mentions
+    # ``alpha`` ``index + 1`` times, so similarity to the Query "alpha"
+    # decreases with index and the top-4 Chunks are paragraphs 0-3.
+    paragraphs = [
+        "alpha " * (index + 1) + "x" * 600 + f" marker-{index}" for index in range(6)
+    ]
+    Ingestion(store=store).ingest(
+        Document(filename="long.md", content="\n\n".join(paragraphs))
+    )
+    conversation = _conversation(Message(role="user", content="alpha"))
+
+    answering.answer(conversation)
+
+    system, _, _ = chat_model.prompts[0]
+    markers_in_context = [
+        f"marker-{index}" for index in range(6) if f"marker-{index}" in system
+    ]
+    assert markers_in_context == ["marker-0", "marker-1", "marker-2", "marker-3"]
+
+
 def test_answering_a_conversation_without_messages_raises_a_readable_error(
     answering: Answering,
 ) -> None:
